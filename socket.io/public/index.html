@@ -58,7 +58,22 @@
 
   <script src="/socket.io/socket.io.js"></script>
   <script>
-    const socket = io();
+    const  serviceDeviceId = 'web browser'+Math.random()*1000; // Replace with the actual deviceId
+    const socket = io({
+      'transports': ['websocket'],
+      'autoConnect': true,
+      'timeout': 20000,
+      'forceNew': true,
+      'query': {
+        'deviceId': serviceDeviceId,
+      }, // Send the deviceId to the server
+    });
+    socket.on('connect', () => {
+        console.log('Connected to server');
+         socket.emit('register', {
+        "deviceId": serviceDeviceId,
+      }); 
+    });
     const form = document.getElementById('form');
     const input = document.getElementById('input');
     const messages = document.getElementById('messages');
