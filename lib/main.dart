@@ -111,14 +111,14 @@ class MyApp extends StatelessWidget {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const Text(
-                'Socket Connection Active',
-                style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+              Text(
+                'Socket Connection Active  deviceId :$deviceId',
+                style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
               ),
               const SizedBox(height: 20),
               ElevatedButton(
                 onPressed: () async {
-                  await _showNotification('Test notification');
+                  await _showNotification('Test notification ... deviceId :$deviceId');
                 },
                 child: const Text('Test Notification'),
               ),
@@ -164,7 +164,7 @@ Future<void> initializeService() async {
       autoStartOnBoot: true,
       notificationChannelId: 'socket_messages',
       initialNotificationTitle: 'Socket Service',
-      initialNotificationContent: 'Socket service is running',
+      initialNotificationContent: 'Socket service is running ,deviceId :$deviceId',
       foregroundServiceNotificationId: 888,
     ),
   );
@@ -207,7 +207,7 @@ void onStart(ServiceInstance service) async {
 
     socket!.onConnect((_) {
       print('Connected. Socket ID: ${socket!.id}');
-      socket!.emit('message', 'phone connected');
+      socket!.emit('message', 'phone connected $deviceId');
 
       // Update service notification to show connected status
       service.invoke('update', {
@@ -220,12 +220,12 @@ void onStart(ServiceInstance service) async {
     });
 
     socket!.onDisconnect((_) {
-      print('Disconnected');
+      print('Disconnected $deviceId');
 
       // Update service notification to show disconnected status
       service.invoke('update', {
         'title': 'Socket Service',
-        'content': 'Disconnected - Trying to reconnect...',
+        'content': 'Disconnected $deviceId- Trying to reconnect...',
       });
 
       // Try to reconnect after 5 seconds
