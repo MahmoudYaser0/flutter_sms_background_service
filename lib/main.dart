@@ -8,19 +8,58 @@ import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:vibration/vibration.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:device_info_plus/device_info_plus.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
-final deviceId = Random().nextInt(10);
+// Global variables
+late String deviceId;
 final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
     FlutterLocalNotificationsPlugin();
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
+  // Get or generate a persistent device ID
+  deviceId = await _getDeviceId();
+  print('Device ID: $deviceId');
+
   await _initializeNotifications();
   await _requestPermissions();
   await initializeService();
 
   runApp(MyApp());
+}
+
+// Get a persistent device ID
+Future<String> _getDeviceId() async {
+  // First check if we already have a stored ID
+  final prefs = await SharedPreferences.getInstance();
+  String? storedId = prefs.getString('device_id');
+
+  if (storedId != null && storedId.isNotEmpty) {
+    return storedId;
+  }
+
+  // If not, generate a new one based on device info
+  final deviceInfo = DeviceInfoPlugin();
+  String id;
+  try {
+    if (Theme.of(GlobalKey<NavigatorState>().currentContext!).platform ==
+        TargetPlatform.android) {
+      final androidInfo = await deviceInfo.androidInfo;
+      id = androidInfo.id; // Android ID
+    } else {
+      id = DateTime.now().millisecondsSinceEpoch.toString();
+    }
+  } catch (e) {
+    // Fallback if device info fails
+    id = 'device_${DateTime.now().millisecondsSinceEpoch}';
+    print('Error getting device info: $e');
+  }
+
+  // Store for future use
+  await prefs.setString('device_id', id);
+  return id;
 }
 
 Future<void> _initializeNotifications() async {
@@ -112,13 +151,19 @@ class MyApp extends StatelessWidget {
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               Text(
-                'Socket Connection Active  deviceId :$deviceId',
-                style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+                'Socket Connection Active\nDevice ID: $deviceId',
+                style: const TextStyle(
+                  fontSize: 24,
+                  fontWeight: FontWeight.bold,
+                ),
+                textAlign: TextAlign.center,
               ),
               const SizedBox(height: 20),
               ElevatedButton(
                 onPressed: () async {
-                  await _showNotification('Test notification ... deviceId :$deviceId');
+                  await _showNotification(
+                    'Test notification\nDevice ID: $deviceId',
+                  );
                 },
                 child: const Text('Test Notification'),
               ),
@@ -164,7 +209,8 @@ Future<void> initializeService() async {
       autoStartOnBoot: true,
       notificationChannelId: 'socket_messages',
       initialNotificationTitle: 'Socket Service',
-      initialNotificationContent: 'Socket service is running ,deviceId :$deviceId',
+      initialNotificationContent:
+          'Socket service is running\nDevice ID: $deviceId',
       foregroundServiceNotificationId: 888,
     ),
   );
@@ -181,10 +227,13 @@ Future<bool> onIosBackground(ServiceInstance service) async {
 void onStart(ServiceInstance service) async {
   final Telephony telephony = Telephony.instance;
 
+  // Get the device ID in the background service context
+  final prefs = await SharedPreferences.getInstance();
+  final serviceDeviceId = prefs.getString('device_id') ?? 'unknown';
+
   // Initialize notifications in background service
   const AndroidInitializationSettings initializationSettingsAndroid =
       AndroidInitializationSettings('app_icon');
-  // AndroidInitializationSettings('@mipmap/ic_launcher');
 
   const InitializationSettings initializationSettings = InitializationSettings(
     android: initializationSettingsAndroid,
@@ -196,42 +245,81 @@ void onStart(ServiceInstance service) async {
   io.Socket? socket;
   Timer? reconnectTimer;
   Timer? heartbeatTimer;
+  bool isConnecting = false;
+  int reconnectAttempts = 0;
+  const int maxReconnectAttempts = 5;
+  const Duration initialReconnectDelay = Duration(seconds: 5);
 
   void connectSocket() {
+    // Prevent multiple connection attempts
+    if (isConnecting) return;
+    isConnecting = true;
+
+    // Calculate backoff delay based on reconnect attempts
+    final reconnectDelay = Duration(
+      milliseconds:
+          initialReconnectDelay.inMilliseconds *
+          (1 << min(reconnectAttempts, 5)),
+    );
+
+    // Update service notification to show connecting status
+    service.invoke('update', {
+      'title': 'Socket Service',
+      'content': 'Connecting to server...\nDevice ID: $serviceDeviceId',
+    });
+
+    // Disconnect existing socket if any
+    socket?.disconnect();
+    socket = null;
+
     socket = io.io("http://192.168.1.106:8080", <String, dynamic>{
       'transports': ['websocket'],
       'autoConnect': true,
       'timeout': 20000,
       'forceNew': true,
+      'query': {
+        'deviceId': serviceDeviceId,
+      }, // Send device ID as a query parameter
     });
 
     socket!.onConnect((_) {
-      print('Connected. Socket ID: ${socket!.id}');
-      socket!.emit('message', 'phone connected $deviceId');
+      print('Connected. Socket ID: ${socket!.id}, Device ID: $serviceDeviceId');
+      socket!.emit('register', {
+        'deviceId': serviceDeviceId,
+      }); // Register with device ID
+
+      // Reset reconnect attempts on successful connection
+      reconnectAttempts = 0;
 
       // Update service notification to show connected status
       service.invoke('update', {
         'title': 'Socket Service',
-        'content': 'Connected - Socket active',
+        'content': 'Connected - Socket active\nDevice ID: $serviceDeviceId',
       });
 
       // Cancel reconnect timer if running
       reconnectTimer?.cancel();
+      isConnecting = false;
     });
 
     socket!.onDisconnect((_) {
-      print('Disconnected $deviceId');
+      print('Disconnected - Device ID: $serviceDeviceId');
 
       // Update service notification to show disconnected status
       service.invoke('update', {
         'title': 'Socket Service',
-        'content': 'Disconnected $deviceId- Trying to reconnect...',
+        'content':
+            'Disconnected - Trying to reconnect...\nDevice ID: $serviceDeviceId',
       });
 
       // Try to reconnect after 5 seconds
       if (isRunning) {
-        reconnectTimer = Timer(const Duration(seconds: 5), () {
+        isConnecting = false;
+        reconnectAttempts++;
+
+        reconnectTimer = Timer(reconnectDelay, () {
           if (isRunning) {
+            print('Attempting to reconnect (attempt $reconnectAttempts)');
             connectSocket();
           }
         });
@@ -242,17 +330,24 @@ void onStart(ServiceInstance service) async {
       if (await Vibration.hasVibrator() == true) {
         Vibration.vibrate();
       }
-      
+
       final SmsSendStatusListener listener = (SendStatus status) {
         // TODO send the status back to socket
         print('SmsSendStatusListener: $status');
+        if (socket != null && socket!.connected) {
+          socket!.emit('sms_status', {
+            'deviceId': serviceDeviceId,
+            'status': status.toString(),
+            'timestamp': DateTime.now().toIso8601String()
+          });
+        }
       };
       // send sms message
-      telephony.sendSms(
-        to: "00963945494513",
-        message: "Hi , How are you ?!",
-        statusListener: listener,
-      );
+      // telephony.sendSms(
+      //   to: "00963945494513",
+      //   message: "Hi , How are you ?!",
+      //   statusListener: listener,
+      // );
       // Show notification
       const AndroidNotificationDetails androidPlatformChannelSpecifics =
           AndroidNotificationDetails(
@@ -276,11 +371,17 @@ void onStart(ServiceInstance service) async {
         platformChannelSpecifics,
       );
 
-      print("message received: $data");
+      print("Message received: $data");
     });
 
     socket!.onError((error) {
       print("Socket error: $error");
+      isConnecting = false;
+    });
+
+    socket!.onConnectError((error) {
+      print("Socket connection error: $error");
+      isConnecting = false;
     });
   }
 
@@ -293,14 +394,17 @@ void onStart(ServiceInstance service) async {
     heartbeatTimer?.cancel();
     socket?.disconnect();
     service.stopSelf();
-    print("background process is now stopped");
+    print("Background process is now stopped");
   });
 
   // Heartbeat to keep socket alive and emit periodic messages
-  heartbeatTimer = Timer.periodic(const Duration(hours: 2), (timer) {
+  heartbeatTimer = Timer.periodic(const Duration(minutes: 30), (timer) {
     if (isRunning && socket != null && socket!.connected) {
-      socket!.emit("message", "app message aftwer two hours $deviceId");
-      print("service is successfully running ${DateTime.now().second}");
+      socket!.emit("heartbeat", {
+        "deviceId": serviceDeviceId,
+        "timestamp": DateTime.now().toIso8601String(),
+      });
+      print("Service is running - heartbeat sent at ${DateTime.now()}");
     } else if (isRunning && (socket == null || !socket!.connected)) {
       print("Socket disconnected, attempting reconnection...");
       connectSocket();
