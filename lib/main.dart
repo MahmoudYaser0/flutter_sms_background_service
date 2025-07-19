@@ -279,6 +279,8 @@ void onStart(ServiceInstance service) async {
       'forceNew': true,
       'query': {
         'deviceId': serviceDeviceId,
+        // TODO ask user for this device phone number
+        'phoneNumber':'0994414614'
       }, // Send device ID as a query parameter
     });
 
@@ -331,23 +333,6 @@ void onStart(ServiceInstance service) async {
         Vibration.vibrate();
       }
 
-      final SmsSendStatusListener listener = (SendStatus status) {
-        // TODO send the status back to socket
-        print('SmsSendStatusListener: $status');
-        if (socket != null && socket!.connected) {
-          socket!.emit('sms_status', {
-            'deviceId': serviceDeviceId,
-            'status': status.toString(),
-            'timestamp': DateTime.now().toIso8601String()
-          });
-        }
-      };
-      // send sms message
-      // telephony.sendSms(
-      //   to: "00963945494513",
-      //   message: "Hi , How are you ?!",
-      //   statusListener: listener,
-      // );
       // Show notification
       const AndroidNotificationDetails androidPlatformChannelSpecifics =
           AndroidNotificationDetails(
@@ -372,6 +357,61 @@ void onStart(ServiceInstance service) async {
       );
 
       print("Message received: $data");
+    });
+
+    sendFaildEvent(int sms_log_id) {
+      socket!.emit('sms.failed', {
+        'deviceId': serviceDeviceId,
+        'sms_log_id': sms_log_id,
+        'timestamp': DateTime.now().toIso8601String(),
+      });
+    }
+
+    socket!.on("sms.send", (data) async {
+      print("SMS send received with: $data");
+      final String phoneNumber = data['send_to'];
+      final String message = data['message'];
+      final int smsLogId = data['sms_log_id'];
+
+      // TODO defined data type as String phone_number ; String message; sms_log_id:number;
+      print("SMS status received: $data");
+      if (await Vibration.hasVibrator() == true) {
+        Vibration.vibrate();
+      }
+
+      // ignore: prefer_function_declarations_over_variables
+      final SmsSendStatusListener listener = (SendStatus status) {
+        //  send the status back to socket
+        print('SmsSendStatusListener: $status');
+        if (socket != null && socket!.connected) {
+          if (status == SendStatus.DELIVERED) {
+            socket!.emit('sms.delivered', {
+              'deviceId': serviceDeviceId,
+              'sms_log_id': smsLogId,
+              'timestamp': DateTime.now().toIso8601String(),
+            });
+          }
+        }
+      };
+      try {
+        // if (await telephony.isSmsCapable == false ||
+        //     await telephony.serviceState != ServiceState.IN_SERVICE) {
+        //   print("SMS cannot be sent");
+        //   sendFaildEvent(smsLogId);
+        //   return;
+        // }
+        // send sms message
+        telephony.sendSms(
+          // to: "00963945494513", // nour
+          // to: "00963968182545",//me
+          to: phoneNumber,
+          message: message,
+          statusListener: listener,
+        );
+      } catch (e) {
+        print("Error sending SMS: $e");
+        sendFaildEvent(smsLogId);
+      }
     });
 
     socket!.onError((error) {
